@@ -1593,6 +1593,12 @@ cluster_type:
   EXPECT_DEATH(initialize(), "tenant_id_format must be configured");
 }
 
+// TODO: in-process end-to-end test for upstream-initiated GOAWAY -> downstream re-dial.
+// Mirror of DrainingAwareHcmSendsGoAwayOnReverseConnections, inverted direction. The
+// downstream-side wiring (DrainAwareConnectionCallbacksWrapper +
+// markTunnelDrainingAndDialReplacement) is covered by unit tests; the full flow is
+// exercised today by the manual two-Envoy validation in reverse_tunnel_test/.
+
 } // namespace
 } // namespace ReverseTunnel
 } // namespace NetworkFilters

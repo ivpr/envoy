@@ -27,6 +27,19 @@ envoy_extension_cc_test(
 )
 
 envoy_extension_cc_test(
+    name = "drain_aware_connection_callbacks_wrapper_test",
+    srcs = ["drain_aware_connection_callbacks_wrapper_test.cc"],
+    extension_names = [
+        "envoy.filters.network.reverse_tunnel_drain_aware_http_connection_manager",
+    ],
+    rbe_pool = "6gig",
+    deps = [
+        "//source/extensions/filters/network/reverse_tunnel/drain_aware_hcm:drain_aware_config",
+        "//test/mocks/http:http_mocks",
+    ],
+)
+
+envoy_extension_cc_test(
     name = "drain_aware_config_test",
     srcs = ["drain_aware_config_test.cc"],
     extension_names = [

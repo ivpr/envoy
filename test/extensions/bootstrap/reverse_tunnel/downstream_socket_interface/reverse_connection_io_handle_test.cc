@@ -3232,6 +3232,88 @@ TEST_F(ReverseConnectionIOHandleTest, CloseNoDoubleCloseWithPipeFds) {
   io_handle_.reset();
 }
 
+// -- markTunnelDrainingAndDialReplacement tests (Component C) --------------------------------
+
+TEST_F(ReverseConnectionIOHandleTest, MarkTunnelDrainingErasesKeyAndKicksMaintenance) {
+  setupThreadLocalSlot();
+
+  auto config = createDefaultTestConfig();
+  io_handle_ = createTestIOHandle(config);
+  ASSERT_NE(io_handle_, nullptr);
+
+  const std::string host = "192.0.2.1:443";
+  const std::string cluster = "remote-cluster";
+  const std::string connection_key = "127.0.0.1:54321";
+
+  addHostConnectionInfo(host, cluster, 1);
+  auto& host_info = getMutableHostConnectionInfo(host);
+  host_info.connection_keys.insert(connection_key);
+  EXPECT_EQ(1u, getHostConnectionInfo(host).connection_keys.size());
+
+  io_handle_->markTunnelDrainingAndDialReplacement(connection_key);
+
+  // Key should be removed from tracking so the maintenance loop sees a deficit.
+  EXPECT_EQ(0u, getHostConnectionInfo(host).connection_keys.size());
+}
+
+TEST_F(ReverseConnectionIOHandleTest, MarkTunnelDrainingUnknownKeyIsNoOp) {
+  setupThreadLocalSlot();
+
+  auto config = createDefaultTestConfig();
+  io_handle_ = createTestIOHandle(config);
+  ASSERT_NE(io_handle_, nullptr);
+
+  // No host entries at all. Should not crash.
+  io_handle_->markTunnelDrainingAndDialReplacement("unknown-key");
+}
+
+TEST_F(ReverseConnectionIOHandleTest, OnDownstreamConnectionClosedAfterDrainIsNoOp) {
+  setupThreadLocalSlot();
+
+  auto config = createDefaultTestConfig();
+  io_handle_ = createTestIOHandle(config);
+  ASSERT_NE(io_handle_, nullptr);
+
+  const std::string host = "192.0.2.1:443";
+  const std::string cluster = "remote-cluster";
+  const std::string connection_key = "127.0.0.1:54321";
+
+  addHostConnectionInfo(host, cluster, 1);
+  auto& host_info = getMutableHostConnectionInfo(host);
+  host_info.connection_keys.insert(connection_key);
+
+  io_handle_->markTunnelDrainingAndDialReplacement(connection_key);
+  EXPECT_EQ(0u, getHostConnectionInfo(host).connection_keys.size());
+
+  // Eventual TCP close — must not crash or double-decrement.
+  io_handle_->onDownstreamConnectionClosed(connection_key);
+  EXPECT_EQ(0u, getHostConnectionInfo(host).connection_keys.size());
+}
+
+TEST_F(ReverseConnectionIOHandleTest, MarkTunnelDrainingIdempotentOnSecondCall) {
+  setupThreadLocalSlot();
+
+  auto config = createDefaultTestConfig();
+  io_handle_ = createTestIOHandle(config);
+  ASSERT_NE(io_handle_, nullptr);
+
+  const std::string host = "192.0.2.1:443";
+  const std::string cluster = "remote-cluster";
+  const std::string connection_key = "127.0.0.1:54321";
+
+  addHostConnectionInfo(host, cluster, 1);
+  auto& host_info = getMutableHostConnectionInfo(host);
+  host_info.connection_keys.insert(connection_key);
+
+  // First call: removes key.
+  io_handle_->markTunnelDrainingAndDialReplacement(connection_key);
+  EXPECT_EQ(0u, getHostConnectionInfo(host).connection_keys.size());
+
+  // Second call: key already gone, must be a no-op (not crash).
+  io_handle_->markTunnelDrainingAndDialReplacement(connection_key);
+  EXPECT_EQ(0u, getHostConnectionInfo(host).connection_keys.size());
+}
+
 } // namespace ReverseConnection
 } // namespace Bootstrap
 } // namespace Extensions
