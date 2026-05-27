@@ -52,6 +52,10 @@ envoy_cc_extension(
     deps = [
         ":reverse_tunnel_acceptor_includes",
         ":upstream_socket_manager_lib",
+        "//envoy/common:conn_pool_interface",
+        "//envoy/network:drain_decision_interface",
+        "//envoy/server:drain_manager_interface",
+        "//envoy/upstream:cluster_manager_interface",
         "//source/common/access_log:access_log_lib",
         "//source/common/common:assert_lib",
         "//source/common/common:logger_lib",
@@ -60,6 +64,7 @@ envoy_cc_extension(
         "//source/common/network:socket_lib",
         "//source/common/protobuf",
         "//source/common/router:string_accessor_lib",
+        "//source/common/runtime:runtime_features_lib",
         "//source/common/stream_info:stream_info_lib",
         "//source/common/stream_info:uint64_accessor_lib",
         "//source/server:generic_factory_context_lib",

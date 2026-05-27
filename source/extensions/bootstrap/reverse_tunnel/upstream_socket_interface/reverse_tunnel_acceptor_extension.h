@@ -242,6 +242,17 @@ private:
                                    absl::string_view event, absl::string_view handoff_kind,
                                    absl::string_view close_reason,
                                    const LifecycleLogMetadata& extra_metadata) const;
+
+  // Periodic drain-decision check. When the server starts draining (typically via
+  // /drain_listeners?graceful from a pod prestop hook), this fans out
+  // ClusterManager::drainConnections(GoAwayAndDrainAndDelete) to every cluster of type
+  // envoy.clusters.reverse_connection so the H2 client codecs on outbound reverse-tunnel
+  // connections send GOAWAY. The peer (downstream-initiator Envoy) reacts to those GOAWAYs
+  // by proactively dialing replacement tunnels to other US replicas before this one terminates.
+  // Polling matches the drain_aware_hcm pattern; the server-wide drain manager's
+  // addOnDrainCloseCb is not used to keep behavior consistent.
+  void onDrainCheckTimer();
+
   Server::Configuration::ServerFactoryContext& context_;
   // Thread-local slot for storing the socket manager per worker thread.
   std::unique_ptr<ThreadLocal::TypedSlot<UpstreamSocketThreadLocal>> tls_slot_;
@@ -252,6 +263,9 @@ private:
   bool enable_tenant_isolation_{false};
   AccessLog::InstanceSharedPtrVector access_logs_;
   ReverseTunnelReporterPtr reporter_{nullptr};
+  // Drain hook state: polling timer + one-shot "GOAWAY sent" guard.
+  Event::TimerPtr drain_check_timer_;
+  bool drain_goaway_dispatched_{false};
 
   /**
    * Update per-worker aggregate metrics (total_clusters and total_nodes).
