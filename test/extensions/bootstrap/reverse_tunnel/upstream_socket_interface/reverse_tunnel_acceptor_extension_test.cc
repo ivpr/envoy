@@ -8,13 +8,18 @@
 #include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/reverse_tunnel_acceptor_extension.h"
 #include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/upstream_socket_manager.h"
 
+#include "source/common/buffer/buffer_impl.h"
+
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/reverse_tunnel_reporting_service/reporter.h"
+#include "test/mocks/server/admin_stream.h"
 #include "test/mocks/server/factory_context.h"
 #include "test/mocks/thread_local/mocks.h"
+#include "test/mocks/upstream/cluster_manager.h"
 #include "test/test_common/logging.h"
 #include "test/test_common/registry.h"
+#include "test/test_common/test_runtime.h"
 #include "test/test_common/utility.h"
 
 #include "fmt/format.h"
@@ -822,6 +827,106 @@ TEST_F(ReverseTunnelAcceptorExtensionTest, ExtensionTenantIsolationPropagatedToS
   auto* socket_manager = registry->socketManager();
   ASSERT_NE(socket_manager, nullptr);
   EXPECT_TRUE(socket_manager->tenantIsolationEnabled());
+}
+
+// Helper fixture for admin /reverse_tunnel/drain_cluster handler tests. Builds on the base
+// fixture but adds a cluster_manager seeded with a mix of cluster types so we can verify the
+// drain only targets envoy.clusters.reverse_connection.
+class ReverseTunnelAcceptorExtensionAdminTest : public ReverseTunnelAcceptorExtensionTest {
+protected:
+  void setupClusters(const std::vector<std::pair<std::string, std::string>>& clusters) {
+    auto& cm = context_.cluster_manager_;
+    std::vector<std::string> names;
+    names.reserve(clusters.size());
+    for (const auto& [name, _] : clusters) {
+      names.push_back(name);
+    }
+    cm.initializeClusters(names, {});
+    for (const auto& [name, type] : clusters) {
+      auto& cluster_info = *cm.active_clusters_.at(name)->info_;
+      auto custom_type =
+          std::make_unique<envoy::config::cluster::v3::Cluster::CustomClusterType>();
+      custom_type->set_name(type);
+      cluster_info.cluster_type_ = std::move(custom_type);
+    }
+  }
+
+  Http::Code invokeHandler() {
+    Http::TestResponseHeaderMapImpl response_headers;
+    Buffer::OwnedImpl response;
+    return extension_->handlerDrainCluster(response_headers, response, admin_stream_);
+  }
+
+  Http::Code invokeHandlerCaptureBody(std::string& body_out) {
+    Http::TestResponseHeaderMapImpl response_headers;
+    Buffer::OwnedImpl response;
+    auto code = extension_->handlerDrainCluster(response_headers, response, admin_stream_);
+    body_out = response.toString();
+    return code;
+  }
+
+  TestScopedRuntime scoped_runtime_;
+  NiceMock<Server::MockAdminStream> admin_stream_;
+};
+
+// Runtime flag off: handler returns 503 and does not fan out.
+TEST_F(ReverseTunnelAcceptorExtensionAdminTest, AdminDrainClusterRespectsRuntimeFlag) {
+  scoped_runtime_.mergeValues(
+      {{"envoy.reloadable_features.reverse_tunnel_drain_with_goaway", "false"}});
+  setupClusters({{"rev1", "envoy.clusters.reverse_connection"}});
+
+  EXPECT_CALL(context_.cluster_manager_,
+              drainConnections(_, _, Envoy::ConnectionPool::DrainBehavior::NotifyPeerAndDrainExisting))
+      .Times(0);
+
+  std::string body;
+  EXPECT_EQ(Http::Code::ServiceUnavailable, invokeHandlerCaptureBody(body));
+  EXPECT_NE(std::string::npos,
+            body.find("envoy.reloadable_features.reverse_tunnel_drain_with_goaway is off"));
+}
+
+// Runtime flag on: handler fans out NotifyPeerAndDrainExisting to every reverse_connection
+// cluster and skips clusters of other types.
+TEST_F(ReverseTunnelAcceptorExtensionAdminTest,
+       AdminDrainClusterFiresOnReverseConnectionClustersOnly) {
+  scoped_runtime_.mergeValues(
+      {{"envoy.reloadable_features.reverse_tunnel_drain_with_goaway", "true"}});
+  setupClusters({{"rev1", "envoy.clusters.reverse_connection"},
+                 {"rev2", "envoy.clusters.reverse_connection"},
+                 {"strict_dns_cluster", "envoy.cluster.strict_dns"}});
+
+  EXPECT_CALL(context_.cluster_manager_,
+              drainConnections("rev1", _,
+                               Envoy::ConnectionPool::DrainBehavior::NotifyPeerAndDrainExisting));
+  EXPECT_CALL(context_.cluster_manager_,
+              drainConnections("rev2", _,
+                               Envoy::ConnectionPool::DrainBehavior::NotifyPeerAndDrainExisting));
+  EXPECT_CALL(context_.cluster_manager_,
+              drainConnections("strict_dns_cluster", _, _))
+      .Times(0);
+
+  std::string body;
+  EXPECT_EQ(Http::Code::OK, invokeHandlerCaptureBody(body));
+  EXPECT_EQ("OK\n", body);
+}
+
+// Repeat calls are no-ops: the one-shot dispatch guard prevents re-fanning out.
+TEST_F(ReverseTunnelAcceptorExtensionAdminTest, AdminDrainClusterIsIdempotent) {
+  scoped_runtime_.mergeValues(
+      {{"envoy.reloadable_features.reverse_tunnel_drain_with_goaway", "true"}});
+  setupClusters({{"rev1", "envoy.clusters.reverse_connection"}});
+
+  EXPECT_CALL(context_.cluster_manager_,
+              drainConnections("rev1", _,
+                               Envoy::ConnectionPool::DrainBehavior::NotifyPeerAndDrainExisting))
+      .Times(1);
+
+  std::string body;
+  EXPECT_EQ(Http::Code::OK, invokeHandlerCaptureBody(body));
+  EXPECT_EQ("OK\n", body);
+
+  EXPECT_EQ(Http::Code::OK, invokeHandlerCaptureBody(body));
+  EXPECT_EQ("already drained\n", body);
 }
 
 } // namespace ReverseConnection
