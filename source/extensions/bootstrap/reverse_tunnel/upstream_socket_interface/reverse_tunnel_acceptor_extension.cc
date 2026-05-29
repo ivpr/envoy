@@ -1,10 +1,10 @@
 #include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/reverse_tunnel_acceptor_extension.h"
 
 #include "envoy/common/conn_pool.h"
-#include "envoy/network/drain_decision.h"
-#include "envoy/server/drain_manager.h"
+#include "envoy/server/admin.h"
 
 #include "source/common/access_log/access_log_impl.h"
+#include "source/common/buffer/buffer_impl.h"
 #include "source/common/network/socket_impl.h"
 #include "source/common/protobuf/protobuf.h"
 #include "source/common/router/string_accessor_impl.h"
@@ -254,37 +254,51 @@ void ReverseTunnelAcceptorExtension::onServerInitialized(Server::Instance&) {
         return tls;
       });
 
-  // Poll the server drain manager (DrainDirection::All is what /drain_listeners?graceful
-  // flips). First time we observe drain, fan out NotifyPeerAndDrainExisting to every
-  // reverse_connection cluster's pools so the peer downstream Envoys can fail over.
-  drain_check_timer_ =
-      context_.mainThreadDispatcher().createTimer([this]() { onDrainCheckTimer(); });
-  drain_check_timer_->enableTimer(std::chrono::milliseconds(100));
+  // Register an admin endpoint so operators can explicitly trigger NotifyPeerAndDrainExisting on
+  // reverse-tunnel clusters. Decoupling this from /drain_listeners lets the operator sequence
+  // egress-listener drain and reverse-tunnel-cluster drain separately.
+  auto admin = context_.admin();
+  if (admin.has_value()) {
+    const bool rc = admin->addHandler(
+        "/reverse_tunnel/drain_cluster",
+        "Fan out NotifyPeerAndDrainExisting to every envoy.clusters.reverse_connection cluster so "
+        "peer initiators receive GOAWAY and dial replacement tunnels to sibling upstream "
+        "replicas. Gated on runtime envoy.reloadable_features.reverse_tunnel_drain_with_goaway.",
+        [this](Http::ResponseHeaderMap& response_headers, Buffer::Instance& response,
+               Server::AdminStream& admin_stream) -> Http::Code {
+          return handlerDrainCluster(response_headers, response, admin_stream);
+        },
+        /*removable=*/false, /*mutates_server_state=*/true);
+    RELEASE_ASSERT(rc, "/reverse_tunnel/drain_cluster admin endpoint is taken");
+  }
 }
 
-void ReverseTunnelAcceptorExtension::onDrainCheckTimer() {
-  if (drain_goaway_dispatched_) {
-    return;
-  }
-  if (!context_.drainManager().draining(Network::DrainDirection::All)) {
-    drain_check_timer_->enableTimer(std::chrono::milliseconds(100));
-    return;
-  }
-  // Opt-in: existing reverse-tunnel deployments must explicitly enable the GOAWAY-on-drain
-  // path. Default-off keeps the prior behavior (no GOAWAY emission; peer learns of drain on
-  // TCP close).
+Http::Code
+ReverseTunnelAcceptorExtension::handlerDrainCluster(Http::ResponseHeaderMap& /*response_headers*/,
+                                                   Buffer::Instance& response,
+                                                   Server::AdminStream& /*admin_stream*/) {
+  // Opt-in: gate on the same runtime flag as the rest of the GOAWAY-on-drain work so a single
+  // toggle controls the entire behavior end-to-end.
   if (!Runtime::runtimeFeatureEnabled(
           "envoy.reloadable_features.reverse_tunnel_drain_with_goaway")) {
-    drain_check_timer_->enableTimer(std::chrono::milliseconds(100));
-    return;
+    response.add("runtime envoy.reloadable_features.reverse_tunnel_drain_with_goaway is off\n");
+    return Http::Code::ServiceUnavailable;
   }
-  drain_goaway_dispatched_ = true;
-  ENVOY_LOG(info,
-            "ReverseTunnelAcceptorExtension: server drain detected; sending GOAWAY on all "
-            "reverse-tunnel cluster pools.");
+  if (drain_goaway_dispatched_) {
+    response.add("already drained\n");
+    return Http::Code::OK;
+  }
+  fanOutDrainNotifyPeer();
+  response.add("OK\n");
+  return Http::Code::OK;
+}
 
-  // clusters() is main-thread-only. ClusterManager fans the per-cluster drain out to
-  // every worker that holds a thread-local entry for the cluster.
+void ReverseTunnelAcceptorExtension::fanOutDrainNotifyPeer() {
+  drain_goaway_dispatched_ = true;
+  ENVOY_LOG(info, "ReverseTunnelAcceptorExtension: draining all reverse-tunnel cluster pools.");
+
+  // clusters() is main-thread-only. ClusterManager fans the per-cluster drain out to every
+  // worker that holds a thread-local entry for the cluster.
   auto& cluster_manager = context_.clusterManager();
   const auto cluster_info_maps = cluster_manager.clusters();
   for (const auto& [cluster_name, cluster_ref] : cluster_info_maps.active_clusters_) {
@@ -298,7 +312,6 @@ void ReverseTunnelAcceptorExtension::onDrainCheckTimer() {
           Envoy::ConnectionPool::DrainBehavior::NotifyPeerAndDrainExisting);
     }
   }
-  // Timer not re-enabled; this is a one-shot.
 }
 
 // Get thread-local registry for the current thread.

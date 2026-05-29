@@ -10,13 +10,14 @@
 #include "envoy/access_log/access_log.h"
 #include "envoy/common/time.h"
 #include "envoy/event/dispatcher.h"
-#include "envoy/event/timer.h"
 #include "envoy/extensions/bootstrap/reverse_tunnel/reverse_tunnel_reporter.h"
 #include "envoy/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/v3/upstream_reverse_connection_socket_interface.pb.h"
 #include "envoy/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/v3/upstream_reverse_connection_socket_interface.pb.validate.h"
+#include "envoy/http/codes.h"
 #include "envoy/network/io_handle.h"
 #include "envoy/network/socket.h"
 #include "envoy/registry/registry.h"
+#include "envoy/server/admin.h"
 #include "envoy/server/bootstrap_extension_config.h"
 #include "envoy/stats/scope.h"
 #include "envoy/stream_info/stream_info.h"
@@ -86,8 +87,9 @@ private:
 class ReverseTunnelAcceptorExtension
     : public Envoy::Network::SocketInterfaceExtension,
       public Envoy::Logger::Loggable<Envoy::Logger::Id::connection> {
-  // Friend class for testing.
+  // Friend classes for testing.
   friend class ReverseTunnelAcceptorExtensionTest;
+  friend class ReverseTunnelAcceptorExtensionAdminTest;
 
 public:
   /**
@@ -243,11 +245,18 @@ private:
                                    absl::string_view close_reason,
                                    const LifecycleLogMetadata& extra_metadata) const;
 
-  // Periodic drain check. When the server begins draining (e.g. /drain_listeners?graceful),
-  // fans out ClusterManager::drainConnections(NotifyPeerAndDrainExisting) to every
+  // Admin handler for POST /reverse_tunnel/drain_cluster. Fans out
+  // ClusterManager::drainConnections(NotifyPeerAndDrainExisting) to every
   // envoy.clusters.reverse_connection cluster so peer initiators receive GOAWAY and can dial
-  // replacement tunnels to sibling upstream replicas before this one terminates.
-  void onDrainCheckTimer();
+  // replacement tunnels to sibling upstream replicas. Exposed as an explicit admin verb
+  // (rather than auto-firing on /drain_listeners) so the operator can sequence egress-listener
+  // drain and reverse-tunnel-cluster drain separately.
+  Http::Code handlerDrainCluster(Http::ResponseHeaderMap& response_headers,
+                                 Buffer::Instance& response, Server::AdminStream&);
+
+  // Iterates active clusters and calls drainConnections(NotifyPeerAndDrainExisting) on every
+  // reverse_connection cluster. Idempotent across calls via drain_goaway_dispatched_.
+  void fanOutDrainNotifyPeer();
 
   Server::Configuration::ServerFactoryContext& context_;
   // Thread-local slot for storing the socket manager per worker thread.
@@ -259,8 +268,7 @@ private:
   bool enable_tenant_isolation_{false};
   AccessLog::InstanceSharedPtrVector access_logs_;
   ReverseTunnelReporterPtr reporter_{nullptr};
-  // Drain hook state: polling timer + one-shot "GOAWAY sent" guard.
-  Event::TimerPtr drain_check_timer_;
+  // One-shot guard: once the admin handler has fanned out the drain, repeat calls are no-ops.
   bool drain_goaway_dispatched_{false};
 
   /**
