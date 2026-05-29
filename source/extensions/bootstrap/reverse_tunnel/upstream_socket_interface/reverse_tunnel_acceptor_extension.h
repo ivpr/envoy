@@ -243,14 +243,10 @@ private:
                                    absl::string_view close_reason,
                                    const LifecycleLogMetadata& extra_metadata) const;
 
-  // Periodic drain-decision check. When the server starts draining (typically via
-  // /drain_listeners?graceful from a pod prestop hook), this fans out
-  // ClusterManager::drainConnections(GoAwayAndDrainAndDelete) to every cluster of type
-  // envoy.clusters.reverse_connection so the H2 client codecs on outbound reverse-tunnel
-  // connections send GOAWAY. The peer (downstream-initiator Envoy) reacts to those GOAWAYs
-  // by proactively dialing replacement tunnels to other US replicas before this one terminates.
-  // Polling matches the drain_aware_hcm pattern; the server-wide drain manager's
-  // addOnDrainCloseCb is not used to keep behavior consistent.
+  // Periodic drain check. When the server begins draining (e.g. /drain_listeners?graceful),
+  // fans out ClusterManager::drainConnections(NotifyPeerAndDrainExisting) to every
+  // envoy.clusters.reverse_connection cluster so peer initiators receive GOAWAY and can dial
+  // replacement tunnels to sibling upstream replicas before this one terminates.
   void onDrainCheckTimer();
 
   Server::Configuration::ServerFactoryContext& context_;

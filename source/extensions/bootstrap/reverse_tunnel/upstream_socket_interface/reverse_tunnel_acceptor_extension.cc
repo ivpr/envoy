@@ -255,7 +255,7 @@ void ReverseTunnelAcceptorExtension::onServerInitialized(Server::Instance&) {
       });
 
   // Poll the server drain manager (DrainDirection::All is what /drain_listeners?graceful
-  // flips). First time we observe drain, fan out GoAwayAndDrainAndDelete to every
+  // flips). First time we observe drain, fan out NotifyPeerAndDrainExisting to every
   // reverse_connection cluster's pools so the peer downstream Envoys can fail over.
   drain_check_timer_ =
       context_.mainThreadDispatcher().createTimer([this]() { onDrainCheckTimer(); });
@@ -291,11 +291,11 @@ void ReverseTunnelAcceptorExtension::onDrainCheckTimer() {
     const auto& cluster_info = cluster_ref.get().info();
     const auto& cluster_type = cluster_info->clusterType();
     if (cluster_type && cluster_type->name() == "envoy.clusters.reverse_connection") {
-      ENVOY_LOG(info, "Draining reverse-tunnel cluster {} with GoAwayAndDrainAndDelete",
+      ENVOY_LOG(info, "Draining reverse-tunnel cluster {} with NotifyPeerAndDrainExisting",
                 cluster_name);
       cluster_manager.drainConnections(
           cluster_name, /*predicate=*/nullptr,
-          Envoy::ConnectionPool::DrainBehavior::GoAwayAndDrainAndDelete);
+          Envoy::ConnectionPool::DrainBehavior::NotifyPeerAndDrainExisting);
     }
   }
   // Timer not re-enabled; this is a one-shot.
