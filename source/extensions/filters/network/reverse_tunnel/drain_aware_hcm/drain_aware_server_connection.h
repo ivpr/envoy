@@ -7,22 +7,27 @@
 #include "envoy/network/drain_decision.h"
 
 #include "source/common/common/logger.h"
+#include "source/extensions/filters/network/reverse_tunnel/drain_aware_hcm/drain_aware_connection_callbacks_wrapper.h"
 
 namespace Envoy {
 namespace Extensions {
 namespace NetworkFilters {
 namespace ReverseTunnel {
 
-// Wraps an Http::ServerConnection and proactively sends an HTTP/2 GOAWAY frame when
-// the listener that owns this connection begins draining. Drain is detected by polling
-// DrainDecision::drainClose() on a short timer; this avoids calling addOnDrainCloseCb()
-// which is intentionally unsupported on PerFilterChainFactoryContextImpl.
+// Wraps an Http::ServerConnection and sends a GOAWAY when the owning listener begins
+// draining. Drain is polled because the listener-level DrainDecision does not support
+// addOnDrainCloseCb() on PerFilterChainFactoryContextImpl. Optionally owns the
+// DrainAwareConnectionCallbacksWrapper installed at codec creation so its lifetime
+// matches the codec's.
 class DrainAwareServerConnection : public Http::ServerConnection,
                                    public Logger::Loggable<Logger::Id::filter> {
 public:
-  DrainAwareServerConnection(Http::ServerConnectionPtr inner, Event::Dispatcher& dispatcher,
-                             const Network::DrainDecision& drain_decision)
-      : inner_(std::move(inner)), drain_decision_(drain_decision) {
+  DrainAwareServerConnection(
+      Http::ServerConnectionPtr inner, Event::Dispatcher& dispatcher,
+      const Network::DrainDecision& drain_decision,
+      std::unique_ptr<DrainAwareConnectionCallbacksWrapper> wrapping_callbacks = nullptr)
+      : inner_(std::move(inner)), drain_decision_(drain_decision),
+        wrapping_callbacks_(std::move(wrapping_callbacks)) {
     ENVOY_LOG(debug, "drain_aware_hcm: created server connection wrapper, protocol={}",
               static_cast<int>(inner_->protocol()));
     drain_check_timer_ = dispatcher.createTimer([this]() { onDrainCheckTimer(); });
@@ -67,6 +72,9 @@ private:
   const Network::DrainDecision& drain_decision_;
   Event::TimerPtr drain_check_timer_;
   bool drain_goaway_sent_{false};
+  // Held to keep the wrapper alive for the codec's full lifetime; the codec stores a
+  // bare reference. nullptr when peer-GOAWAY observation is not wired up.
+  std::unique_ptr<DrainAwareConnectionCallbacksWrapper> wrapping_callbacks_;
 };
 
 } // namespace ReverseTunnel

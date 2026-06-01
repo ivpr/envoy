@@ -293,6 +293,17 @@ public:
   void onDownstreamConnectionClosed(const std::string& connection_key);
 
   /**
+   * Drop a tunnel from tracking (peer sent GOAWAY) and kick maintenance to dial a
+   * replacement. The underlying TCP socket is left alone so in-flight streams can finish;
+   * onDownstreamConnectionClosed will no-op when the socket eventually closes.
+   *
+   * Invoked from the drain_aware_hcm filter on receipt of a peer GOAWAY.
+   *
+   * @param connection_key the local-address string of the outbound tunnel socket.
+   */
+  void markTunnelDrainingAndDialReplacement(const std::string& connection_key);
+
+  /**
    * Get reference to the cluster manager.
    * @return reference to the cluster manager
    */
