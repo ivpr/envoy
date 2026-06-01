@@ -211,6 +211,10 @@ FALSE_RUNTIME_GUARD(envoy_reloadable_features_remove_legacy_route_formatter);
 
 // Force a local reply from upstream envoy for reverse connections.
 FALSE_RUNTIME_GUARD(envoy_reloadable_features_reverse_conn_force_local_reply);
+// Enables drain-time GOAWAY emission on reverse_connection cluster pools and the
+// downstream-side observer that drops the affected tunnel from tracking and re-dials.
+// Default off so existing reverse-tunnel deployments see no behavior change until opted in.
+FALSE_RUNTIME_GUARD(envoy_reloadable_features_reverse_tunnel_drain_with_goaway);
 // RELEASE_ASSERT when upstream stream detects UAF of downstream response decoder instance.
 FALSE_RUNTIME_GUARD(envoy_reloadable_features_abort_when_accessing_dead_decoder);
 // TODO(pradeepcrao): Create a config option to enable this instead after
