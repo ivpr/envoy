@@ -294,6 +294,17 @@ public:
   void onDownstreamConnectionClosed(const std::string& connection_key);
 
   /**
+   * Drop a tunnel from tracking because it has begun draining (the downstream HCM sent a
+   * shutdownNotice/GOAWAY due to max_connection_duration or graceful shutdown, or the peer sent a
+   * GOAWAY) and kick maintenance to dial a replacement immediately. The underlying TCP socket is
+   * left alone so in-flight HTTP/2 streams can finish; onDownstreamConnectionClosed() no-ops when
+   * the socket eventually closes.
+   *
+   * @param connection_key the local-address string of the outbound tunnel socket.
+   */
+  void markTunnelDrainingAndDialReplacement(const std::string& connection_key);
+
+  /**
    * Get reference to the cluster manager.
    * @return reference to the cluster manager
    */

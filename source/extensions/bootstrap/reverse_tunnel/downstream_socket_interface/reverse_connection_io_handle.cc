@@ -800,7 +800,12 @@ void ReverseConnectionIOHandle::onDownstreamConnectionClosed(const std::string& 
   }
 
   if (host_address.empty()) {
-    ENVOY_LOG(warn, "Could not find host for connection key: {}", connection_key);
+    // Key already removed (typically via markTunnelDrainingAndDialReplacement when the tunnel
+    // began draining earlier). Benign no-op; logged at debug to avoid noisy warnings.
+    ENVOY_LOG(debug,
+              "reverse_tunnel: connection key {} already removed from tracking; closure cleanup "
+              "is a no-op",
+              connection_key);
     return;
   }
 
@@ -826,6 +831,45 @@ void ReverseConnectionIOHandle::onDownstreamConnectionClosed(const std::string& 
             "reverse_tunnel: Connection closure recorded for host {} in cluster {}. "
             "Next maintenance cycle will re-initiate if needed.",
             host_address, cluster_name);
+}
+
+void ReverseConnectionIOHandle::markTunnelDrainingAndDialReplacement(
+    const std::string& connection_key) {
+  ENVOY_LOG(info, "reverse_tunnel: tunnel {} draining; dropping from tracking and dialing replacement",
+            connection_key);
+
+  // Find the host that owns this connection key.
+  std::string host_address;
+  std::string cluster_name;
+  for (const auto& [host, host_info] : host_to_conn_info_map_) {
+    if (host_info.connection_keys.find(connection_key) != host_info.connection_keys.end()) {
+      host_address = host;
+      cluster_name = host_info.cluster_name;
+      break;
+    }
+  }
+  if (host_address.empty()) {
+    // Already removed (e.g. a prior drain notice, or the host was pruned). Benign no-op.
+    ENVOY_LOG(debug, "reverse_tunnel: connection key {} not in tracking map; nothing to drain",
+              connection_key);
+    return;
+  }
+
+  // Drop the key so the maintenance loop sees a deficit and dials a replacement. The underlying
+  // TCP socket is left alone: in-flight HTTP/2 streams keep running on it and it closes naturally
+  // on the next FIN; onDownstreamConnectionClosed() then no-ops.
+  auto host_it = host_to_conn_info_map_.find(host_address);
+  if (host_it != host_to_conn_info_map_.end()) {
+    host_it->second.connection_keys.erase(connection_key);
+    ENVOY_LOG(debug, "reverse_tunnel: removed draining connection key {} from host {} (remaining: {})",
+              connection_key, host_address, host_it->second.connection_keys.size());
+  }
+  removeConnectionState(host_address, cluster_name, connection_key);
+
+  // Dial the replacement on the next dispatcher pass instead of waiting for the periodic tick.
+  if (rev_conn_retry_timer_ != nullptr) {
+    rev_conn_retry_timer_->enableTimer(std::chrono::milliseconds(0));
+  }
 }
 
 void ReverseConnectionIOHandle::updateStateGauge(const std::string& host_address,
