@@ -57,11 +57,12 @@ protected:
 };
 
 // The options object must be recoverable as an Http::ClientCodecFactory via sidecast, which is how
-// ClusterInfoImpl surfaces a per-cluster upstream codec factory.
-TEST_F(ReverseTunnelUpstreamCodecTest, SidecastRecoversFactory) {
+// The options object surfaces a per-cluster upstream codec factory via the ProtocolOptionsConfig
+// hook (how ClusterInfoImpl discovers it).
+TEST_F(ReverseTunnelUpstreamCodecTest, OptionsExposesCodecFactory) {
   Upstream::ProtocolOptionsConfigConstSharedPtr opts =
       std::make_shared<ReverseTunnelUpstreamCodecOptions>(makeProto(true), stats_, nullptr);
-  EXPECT_NE(std::dynamic_pointer_cast<const Envoy::Http::ClientCodecFactory>(opts), nullptr);
+  EXPECT_TRUE(opts->upstreamHttpClientCodecFactory().has_value());
 }
 
 // Scenario 1/2: a received GOAWAY is observed (logged + counted) and forwarded to the real
@@ -92,9 +93,10 @@ TEST_F(ReverseTunnelUpstreamCodecTest, ConnectionForwardsAndCountsGoawaySent) {
 }
 
 // Scenario 3: graceful drain sends a shutdown notice immediately, then after drain_time sends the
-// final GOAWAY to the peer AND gracefully drains the local pool connection (drives onGoAway into the
-// pool's active client) instead of hard-closing it. The pool drain is what lets in-flight requests
-// finish and routes new requests onto the replacement tunnel; a hard close would abort in-flight.
+// final GOAWAY to the peer AND gracefully drains the local pool connection (drives onGoAway into
+// the pool's active client) instead of hard-closing it. The pool drain is what lets in-flight
+// requests finish and routes new requests onto the replacement tunnel; a hard close would abort
+// in-flight.
 TEST_F(ReverseTunnelUpstreamCodecTest, StartGracefulDrainTwoPhase) {
   auto inner = std::make_unique<NiceMock<Envoy::Http::MockClientConnection>>();
   auto* inner_raw = inner.get();
@@ -111,8 +113,8 @@ TEST_F(ReverseTunnelUpstreamCodecTest, StartGracefulDrainTwoPhase) {
   EXPECT_EQ(0, stats_.goaway_sent_.value());
 
   // Phase 2: timer fires -> final GOAWAY to the peer, plus a graceful pool drain driven into the
-  // local pool's active client (onGoAway on the wrapped callbacks). goaway_received_ stays 0 because
-  // this is a locally-initiated drain, not an observed peer GOAWAY.
+  // local pool's active client (onGoAway on the wrapped callbacks). goaway_received_ stays 0
+  // because this is a locally-initiated drain, not an observed peer GOAWAY.
   EXPECT_CALL(*inner_raw, goAway());
   EXPECT_CALL(callbacks_, onGoAway(Envoy::Http::GoAwayErrorCode::NoError));
   drain_timer->invokeCallback();
@@ -151,51 +153,31 @@ TEST_F(ReverseTunnelUpstreamCodecTest, RegistryDrainsRegisteredCluster) {
   EXPECT_EQ(0, stats_.goaway_received_.value());
 }
 
-// When disabled, the stock codec (create_default) is returned unchanged.
+// When disabled, the factory declines (returns nullptr) so CodecClientProd uses the stock codec.
 TEST_F(ReverseTunnelUpstreamCodecTest, PassThroughWhenDisabled) {
   ReverseTunnelUpstreamCodecOptions opts(makeProto(false), stats_, nullptr);
-
-  auto inner = std::make_unique<NiceMock<Envoy::Http::MockClientConnection>>();
-  Envoy::Http::ClientConnection* inner_cc = inner.get();
-  Envoy::Http::ClientCodecFactory::CreateDefaultCodecCb create_default =
-      [&]() -> Envoy::Http::ClientConnectionPtr { return std::move(inner); };
-
-  auto codec = opts.createClientCodec(makeContext(Envoy::Http::CodecType::HTTP2), create_default);
-  EXPECT_EQ(codec.get(), inner_cc);
+  EXPECT_EQ(opts.createClientCodec(makeContext(Envoy::Http::CodecType::HTTP2)), nullptr);
 }
 
-// Non-HTTP/2 codecs are not customized even when enabled.
+// Non-HTTP/2 codecs are not customized even when enabled; the factory declines.
 TEST_F(ReverseTunnelUpstreamCodecTest, PassThroughForHttp1) {
   ReverseTunnelUpstreamCodecOptions opts(makeProto(true), stats_, nullptr);
-
-  auto inner = std::make_unique<NiceMock<Envoy::Http::MockClientConnection>>();
-  Envoy::Http::ClientConnection* inner_cc = inner.get();
-  Envoy::Http::ClientCodecFactory::CreateDefaultCodecCb create_default =
-      [&]() -> Envoy::Http::ClientConnectionPtr { return std::move(inner); };
-
-  auto codec = opts.createClientCodec(makeContext(Envoy::Http::CodecType::HTTP1), create_default);
-  EXPECT_EQ(codec.get(), inner_cc);
+  EXPECT_EQ(opts.createClientCodec(makeContext(Envoy::Http::CodecType::HTTP1)), nullptr);
 }
 
 // Even enabled + HTTP/2, the codec is only customized for reverse-connection clusters. A cluster
 // whose type is not envoy.clusters.reverse_connection (here: the default mock returns no custom
-// cluster type) falls through to the stock codec.
+// cluster type) declines, falling through to the stock codec.
 TEST_F(ReverseTunnelUpstreamCodecTest, PassThroughForNonReverseConnectionCluster) {
   ReverseTunnelUpstreamCodecOptions opts(makeProto(true), stats_, nullptr);
 
   // MockClusterInfo::clusterType() returns an empty OptRef by default (a built-in cluster type),
   // so the reverse-connection guard does not match.
   ON_CALL(cluster_, clusterType())
-      .WillByDefault(testing::Return(
-          OptRef<const envoy::config::cluster::v3::Cluster::CustomClusterType>{}));
+      .WillByDefault(
+          testing::Return(OptRef<const envoy::config::cluster::v3::Cluster::CustomClusterType>{}));
 
-  auto inner = std::make_unique<NiceMock<Envoy::Http::MockClientConnection>>();
-  Envoy::Http::ClientConnection* inner_cc = inner.get();
-  Envoy::Http::ClientCodecFactory::CreateDefaultCodecCb create_default =
-      [&]() -> Envoy::Http::ClientConnectionPtr { return std::move(inner); };
-
-  auto codec = opts.createClientCodec(makeContext(Envoy::Http::CodecType::HTTP2), create_default);
-  EXPECT_EQ(codec.get(), inner_cc);
+  EXPECT_EQ(opts.createClientCodec(makeContext(Envoy::Http::CodecType::HTTP2)), nullptr);
 }
 
 } // namespace

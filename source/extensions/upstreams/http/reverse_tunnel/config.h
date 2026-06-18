@@ -18,23 +18,26 @@ namespace ReverseTunnel {
 
 /**
  * Per-cluster upstream codec options for reverse-tunnel clusters. The object doubles as the
- * Http::ClientCodecFactory (recovered by sidecast in ClusterInfoImpl), so the upstream HTTP/2
- * client codec can be made drain-aware.
+ * Http::ClientCodecFactory (surfaced via ProtocolOptionsConfig::upstreamHttpClientCodecFactory()),
+ * so the upstream HTTP/2 client codec can be made drain-aware.
  */
 class ReverseTunnelUpstreamCodecOptions : public Upstream::ProtocolOptionsConfig,
                                           public Envoy::Http::ClientCodecFactory {
 public:
-  ReverseTunnelUpstreamCodecOptions(
-      const envoy::extensions::upstreams::http::reverse_tunnel::v3::ReverseTunnelUpstreamCodecOptions&
-          proto,
-      const ReverseTunnelUpstreamCodecStats& stats, UpstreamCodecDrainRegistrySharedPtr registry)
+  ReverseTunnelUpstreamCodecOptions(const envoy::extensions::upstreams::http::reverse_tunnel::v3::
+                                        ReverseTunnelUpstreamCodecOptions& proto,
+                                    const ReverseTunnelUpstreamCodecStats& stats,
+                                    UpstreamCodecDrainRegistrySharedPtr registry)
       : enable_drain_with_goaway_(proto.enable_drain_with_goaway()), stats_(stats),
         registry_(std::move(registry)) {}
 
+  // Upstream::ProtocolOptionsConfig
+  OptRef<const Envoy::Http::ClientCodecFactory> upstreamHttpClientCodecFactory() const override {
+    return *this;
+  }
+
   // Envoy::Http::ClientCodecFactory
-  Envoy::Http::ClientConnectionPtr
-  createClientCodec(const Context& context,
-                    const CreateDefaultCodecCb& create_default) const override;
+  Envoy::Http::ClientConnectionPtr createClientCodec(const Context& context) const override;
 
 private:
   const bool enable_drain_with_goaway_;
@@ -48,9 +51,9 @@ private:
  */
 class ReverseTunnelUpstreamCodecFactory : public Server::Configuration::ProtocolOptionsFactory {
 public:
-  absl::StatusOr<Upstream::ProtocolOptionsConfigConstSharedPtr>
-  createProtocolOptionsConfig(const Protobuf::Message& config,
-                              Server::Configuration::ProtocolOptionsFactoryContext& context) override;
+  absl::StatusOr<Upstream::ProtocolOptionsConfigConstSharedPtr> createProtocolOptionsConfig(
+      const Protobuf::Message& config,
+      Server::Configuration::ProtocolOptionsFactoryContext& context) override;
   ProtobufTypes::MessagePtr createEmptyProtocolOptionsProto() override;
   ProtobufTypes::MessagePtr createEmptyConfigProto() override;
   std::string category() const override { return "envoy.upstream_options"; }

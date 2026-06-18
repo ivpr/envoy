@@ -31,19 +31,19 @@ SINGLETON_MANAGER_REGISTRATION(reverse_tunnel_upstream_codec_drain);
 // a drain without specifying drain_time_ms.
 constexpr uint64_t DefaultDrainTimeMs = 5000;
 
-Envoy::Http::ClientConnectionPtr ReverseTunnelUpstreamCodecOptions::createClientCodec(
-    const Context& context, const CreateDefaultCodecCb& create_default) const {
+Envoy::Http::ClientConnectionPtr
+ReverseTunnelUpstreamCodecOptions::createClientCodec(const Context& context) const {
   // Scope the drain-aware codec to HTTP/2 reverse-connection clusters. The core codec-factory seam
-  // is intentionally generic (it discovers any protocol-options object that implements
-  // ClientCodecFactory by sidecast), so we enforce the cluster-type specificity here in the
-  // extension rather than coupling core to the reverse_connection cluster name. If these options are
-  // ever attached to a non-reverse-connection cluster, fall back to the stock codec.
+  // is intentionally generic (it discovers any protocol-options object that exposes a
+  // ClientCodecFactory), so we enforce the cluster-type specificity here in the extension rather
+  // than coupling core to the reverse_connection cluster name. If these options are ever attached
+  // to a non-reverse-connection cluster, return nullptr so CodecClientProd uses the stock codec.
   const auto custom_type = context.cluster.clusterType();
   const bool is_reverse_connection =
       custom_type.has_value() && custom_type->name() == "envoy.clusters.reverse_connection";
   if (!enable_drain_with_goaway_ || context.type != Envoy::Http::CodecType::HTTP2 ||
       !is_reverse_connection) {
-    return create_default();
+    return nullptr;
   }
 
   // Build the HTTP/2 client codec with a callbacks wrapper so received GOAWAYs are observed
@@ -57,22 +57,22 @@ Envoy::Http::ClientConnectionPtr ReverseTunnelUpstreamCodecOptions::createClient
       cluster.maxResponseHeadersKb().value_or(Envoy::Http::DEFAULT_MAX_REQUEST_HEADERS_KB),
       cluster.maxResponseHeadersCount(), Envoy::Http::Http2::ProdNghttp2SessionFactory::get());
   auto* h2_codec = inner.get();
-  return std::make_unique<DrainAwareClientConnection>(std::move(inner), std::move(callbacks), stats_,
-                                                      context.connection.dispatcher(), registry_,
-                                                      cluster.name(), h2_codec);
+  return std::make_unique<DrainAwareClientConnection>(std::move(inner), std::move(callbacks),
+                                                      stats_, context.connection.dispatcher(),
+                                                      registry_, cluster.name(), h2_codec);
 }
 
 absl::StatusOr<Upstream::ProtocolOptionsConfigConstSharedPtr>
 ReverseTunnelUpstreamCodecFactory::createProtocolOptionsConfig(
-    const Protobuf::Message& config, Server::Configuration::ProtocolOptionsFactoryContext& context) {
-  const auto& typed_config =
-      MessageUtil::downcastAndValidate<const ReverseTunnelProto::ReverseTunnelUpstreamCodecOptions&>(
-          config, context.messageValidationVisitor());
+    const Protobuf::Message& config,
+    Server::Configuration::ProtocolOptionsFactoryContext& context) {
+  const auto& typed_config = MessageUtil::downcastAndValidate<
+      const ReverseTunnelProto::ReverseTunnelUpstreamCodecOptions&>(
+      config, context.messageValidationVisitor());
 
   auto& server_context = context.serverFactoryContext();
   auto registry = server_context.singletonManager().getTyped<UpstreamCodecDrainRegistry>(
-      SINGLETON_MANAGER_REGISTERED_NAME(reverse_tunnel_upstream_codec_drain),
-      [&server_context] {
+      SINGLETON_MANAGER_REGISTERED_NAME(reverse_tunnel_upstream_codec_drain), [&server_context] {
         return std::make_shared<UpstreamCodecDrainRegistry>(server_context.threadLocal());
       });
 
