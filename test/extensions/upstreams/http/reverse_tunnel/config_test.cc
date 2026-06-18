@@ -40,8 +40,8 @@ makeProto(bool enable) {
 class ReverseTunnelUpstreamCodecTest : public testing::Test {
 protected:
   Envoy::Http::ClientCodecFactory::Context makeContext(Envoy::Http::CodecType type) {
-    return Envoy::Http::ClientCodecFactory::Context{type, connection_, callbacks_, cluster_,
-                                                    random_};
+    return Envoy::Http::ClientCodecFactory::Context{
+        type, connection_, callbacks_, cluster_, random_, transport_socket_options_};
   }
 
   // store_ must be declared before stats_ (stats_ is generated from its scope).
@@ -52,6 +52,7 @@ protected:
   NiceMock<Envoy::Http::MockConnectionCallbacks> callbacks_;
   NiceMock<Upstream::MockClusterInfo> cluster_;
   NiceMock<Random::MockRandomGenerator> random_;
+  std::shared_ptr<const Network::TransportSocketOptions> transport_socket_options_;
   NiceMock<Event::MockDispatcher> dispatcher_;
   NiceMock<ThreadLocal::MockInstance> tls_;
 };
